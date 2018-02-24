@@ -1,15 +1,9 @@
-# ziRoom
+# ziroom_spider
+forked from [yrjyrj123/ziRoom](https://github.com/yrjyrj123/ziRoom),thanks.
 
-搜集链家自如品牌房源，并使用百度地图可视化。
+自如爬虫，按区域抓取自如房源，并使用百度地图可视化。
 
 ![房源可视化效果](https://github.com/yrjyrj123/image/raw/master/ziroom_map.png)
-
-## 查看房源信息
-本人坐标北京，正在寻找房子，同在北京的小伙伴可以直接查看我搜集好的房源。
-
-近期会每日更新: 
-
-[传送门](http://yrjyrj123.github.io/ziRoom/web)
 
 ## 自行搜集房源
 
@@ -19,7 +13,7 @@
 
 ### 使用方法：
 
-修改 **ziRoom.py** 第一行中的经纬度范围为想要扫描的范围：
+修改 **ziroom_spider.py** 第一行中的经纬度范围为想要扫描的范围：
 
 	grid_range = [115.7, 117.4, 39.4, 41.6] #北京市范围 
 	#参数格式["lon_min,lon_max,lat_min,lat_max"]
@@ -33,7 +27,7 @@
 
 运行：
 	
-	python ziRoom.py
+	python ziroom_spider.py
 
 如果一切正常，将看到类似输出：
 
@@ -53,7 +47,7 @@
 启动一个简易HTTP服务器:
 	
 	cd web
-	python -m SimpleHTTPServer 5000
+	python -m http.server 5000
 
 使用浏览器打开**http://localhost:5000**
 
