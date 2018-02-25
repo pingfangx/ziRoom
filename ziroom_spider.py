@@ -132,14 +132,18 @@ class GridManager:
         self._q = queue.Queue()
         "队列"
 
+        self._smaller_q = queue.Queue()
+
         root_grid = Grid(lonlat)
         self._q.put(root_grid)
         self._total_area = root_grid.area()
         self._min_area = min_area
         self._split_count = split_count
         self._thread_num = thread_num
+        self._running_thread_num = 0
         self._result = {}
         self._scan_start_time = 0
+        self._run_start_time = 0
         self._scanned_area = 0
 
     def run(self):
@@ -147,8 +151,8 @@ class GridManager:
         分析这一段算法，出列，如果不为空，则分割，再入列，取下一个
         这样的结果是，当到达第一个最小区域时，整个队列中都是最小区域块，其中一些可能仍没有房源
         """
-        self._scan_start_time = time.time()
 
+        self._run_start_time = time.time()
         # 第一步，划分区块
 
         # 求需要划分多少轮
@@ -158,68 +162,91 @@ class GridManager:
 
         # 划分至最小块
         for i in range(num):
-            scan_size = self._q.qsize()
-            print('\n划分第 %d/%d 轮，本轮共需划分 %d 个区块' % (i + 1, num, scan_size))
+            print('\n划分第 %d/%d 轮，本轮共需划分 %d 个区块' % (i + 1, num, self._q.qsize()))
 
-            smaller_area_queue = queue.Queue()
-            temp_index = 0
-            while not self._q.empty():
-                temp_index += 1
-                grid = self._q.get()
-                status = grid.status()
-                if status == -1:
-                    # 为空
-                    print('第 %d/%d 个区块为空，移除' % (temp_index, scan_size))
-                elif status == -2:
-                    print('第 %d/%d 个区块只有一页，加进队列' % (temp_index, scan_size))
-                    smaller_area_queue.put(grid)
-                else:
-                    # 需要划分
-                    print('第 %d/%d 个区块不为空，进行划分' % (temp_index, scan_size))
-                    for item in grid.split(count=self._split_count):
-                        smaller_area_queue.put(item)
-            # 经过上一层循环，q 已为空，新划分的小块全部位于 smaller_area_queue 中
-            self._q = smaller_area_queue
+            # 初始化
+            self._scan_start_time = time.time()
+            self._smaller_q = queue.Queue()
 
-        # 第二步，对划分的所有最小区块抓取房源
+            # 划分
+            self.start_multi_thread(self.split_area)
 
-        size = self._q.qsize()
-        print('划分区块结束，花费时间 %ds，开始抓取房源，共有 %d 个区块' % (time.time() - self._scan_start_time, size))
+            # 经过划分，q 已为空，新划分的小块全部位于 _smaller_q 中
+            self._q = self._smaller_q
+
+            print('划分第 %d/%d 轮结束,共划分出 %d 个区块\n' % (i + 1, num, self._q.qsize()))
+
+        # 第二步，对划分好的所有最小区块抓取房源
+        print('\n开始获取房源,共 %d 个区块' % self._q.qsize())
         self._scan_start_time = time.time()
-        self._scanned_area = 0
+        self.start_multi_thread(self.get_rooms)
+        print("获取房源结束")
+        return self._result
+
+    def start_multi_thread(self, target):
+        """启动多线程"""
+        self._running_thread_num = 0
         threads = []
         for i in range(0, self._thread_num):
-            worker = threading.Thread(target=self.get_rooms_in_thread, args=(i + 1,))
+            worker = threading.Thread(target=self.work_in_thread, args=(target, i + 1))
             worker.start()
             threads.append(worker)
         # 这里好像不需要 thread 的 join，queue 的 join 也会阻塞，但还是加上线程的 join，以使线程结束后再继续执行
+        # 注意调用 task_done()
         # https://docs.python.org/3/library/queue.html
         # http://blog.csdn.net/xiao_huocai/article/details/74781820
         # block until all tasks are done
         self._q.join()
         for t in threads:
             t.join()
-        print("获取结束")
-        return self._result
 
-    def get_rooms_in_thread(self, thread_id):
+    def work_in_thread(self, target, thread_id):
+        """在线程中执行,直到出错"""
         while True:
             try:
-                self.get_rooms(thread_id)
+                self._running_thread_num += 1
+                grid = self._q.get(block=True, timeout=1)
+                self._scanned_area += 1
+                area_index = self._scanned_area
+                target(grid, thread_id, area_index)
+                # 告知结束一个任务
+                self._q.task_done()
             except queue.Empty:
-                print('线程 %d 结束' % thread_id)
+                print('线程 %d 结束，还有 %d 个线程运行中' % (thread_id, self._running_thread_num - 1))
                 break
+            finally:
+                self._running_thread_num -= 1
 
-    def get_rooms(self, thread_id):
-        area = self._q.get(block=True, timeout=1)  # 不设置阻塞的话会一直去尝试获取资源
-        self._scanned_area += 1
-        print('线程 %d 获取第 %d 个区块' % (thread_id, self._scanned_area))
-        self._result.update(area.get_rooms(thread_id))
-        remain_time = (time.time() - self._scan_start_time) / self._scanned_area * self._q.qsize()
-        print('线程 %d 获取完成，当前共 %d 个房源，队列剩余 %d 个区块，花费时间 %ds，预计剩余时间 %ds ' % (
-            thread_id, len(self._result), self._q.qsize(), time.time() - self._scan_start_time, remain_time))
-        # 告知结束一个任务
-        self._q.task_done()
+    def split_area(self, grid, thread_id, area_index):
+        """划分区块"""
+        status = grid.status()
+        if status == -1:
+            # 为空
+            self.print_progress('结果为空，移除', thread_id, area_index)
+        elif status == -2:
+            self.print_progress('结果只有一页，加进队列', thread_id, area_index)
+            self._smaller_q.put(grid)
+        else:
+            # 需要划分
+            self.print_progress('结果不为空，进行划分', thread_id, area_index)
+            for item in grid.split(count=self._split_count):
+                self._smaller_q.put(item)
+
+    def get_rooms(self, grid, thread_id, area_index):
+        """获取房源"""
+        self._result.update(grid.get_rooms(thread_id))
+        self.print_progress('当前共 %d 个房源' % (len(self._result)), thread_id, area_index)
+
+    def print_progress(self, text, thread_id, area_index):
+        """输出进度"""
+        spend_time = time.time() - self._scan_start_time
+        # 剩余时间，包括运行中的线程
+        remain_time = (time.time() - self._scan_start_time) / self._scanned_area * (
+                self._q.qsize() + self._running_thread_num)
+        all_spend_time = time.time() - self._run_start_time
+        text = '线程 %d:区块 %d，%s，剩余区块 %d，任务花费时间 %ds，预计剩余 %ds，总花费时间 %ds' \
+               % (thread_id, area_index, text, self._q.qsize(), spend_time, remain_time, all_spend_time)
+        print(text)
 
 
 if __name__ == '__main__':
