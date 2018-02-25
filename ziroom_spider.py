@@ -20,6 +20,7 @@ class Grid:
         self._lat_min = lonlat[2]
         self._lat_max = lonlat[3]
         self._page_one_cache = None
+        "第一页的缓存"
 
     def __str__(self):
         return "%.6f,%.6f,%.6f,%.6f" % tuple(self.get_range())
@@ -28,7 +29,7 @@ class Grid:
         return [self._lon_min, self._lon_max, self._lat_min, self._lat_max]
 
     def _json_request(self, lonlat, page_index):
-        """联网请求"""
+        """联网请求或使用缓存"""
         if page_index == 1 and self._page_one_cache is not None:
             return self._page_one_cache
 
@@ -55,9 +56,14 @@ class Grid:
                 print(type(e))
                 print('error:%s' % e)
 
-    def empty(self):
+    def status(self):
         obj = self._json_request((self._lon_min, self._lon_max, self._lat_min, self._lat_max), 1)
-        return len(obj["data"]["rooms"]) == 0
+        if len(obj["data"]["rooms"]) == 0:
+            return -1
+        elif obj["data"]["pages"] == 1:
+            # 只有一页，不需要划分
+            return -2
+        return 0
 
     def area(self):
         return (self._lon_max - self._lon_min) * 1e5 * (self._lat_max - self._lat_min) * 1e5
@@ -138,14 +144,18 @@ class GridManager:
             while not self._q.empty():
                 temp_index += 1
                 grid = self._q.get()
-                if not grid.empty():
-                    # 不为空，划分
+                status = grid.status()
+                if status == -1:
+                    # 为空
+                    print('第 %d/%d 个区块为空，移除' % (temp_index, scan_size))
+                elif status == -2:
+                    print('第 %d/%d 个区块只有一页，加进队列' % (temp_index, scan_size))
+                    smaller_area_queue.put(grid)
+                else:
+                    # 需要划分
                     print('第 %d/%d 个区块不为空，进行划分' % (temp_index, scan_size))
                     for item in grid.split(count=self._split_count):
                         smaller_area_queue.put(item)
-                else:
-                    # 为空
-                    print('第 %d/%d 个区块为空，移除' % (temp_index, scan_size))
             # 经过上一层循环，q 已为空，新划分的小块全部位于 smaller_area_queue 中
             self._q = smaller_area_queue
 
