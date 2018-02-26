@@ -37,7 +37,7 @@
 
 
     var map = new BMap.Map("allmap");
-    map.centerAndZoom(new BMap.Point(116.461994, 39.967171), 16);
+    map.centerAndZoom(new BMap.Point(116.461994, 39.967171), 13);
     map.enableScrollWheelZoom(true);
     var top_left_navigation = new BMap.NavigationControl();
 
@@ -55,7 +55,13 @@
     function filter_room(room) {
         var area = room['area_display'].toString();
         area = area.replace('约', '');
-        return area > 15;
+        if (area < 15) {
+            return false;
+        }
+        if (room['sell_price'] > 3000) {
+            return false;
+        }
+        return true;
     }
 
     function draw_rooms(rooms, room_type, color) {
