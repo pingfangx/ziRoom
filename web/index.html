@@ -37,7 +37,7 @@
 
 
     var map = new BMap.Map("allmap");
-    map.centerAndZoom(new BMap.Point(116.404, 39.915), 11);
+    map.centerAndZoom(new BMap.Point(116.461994, 39.967171), 16);
     map.enableScrollWheelZoom(true);
     var top_left_navigation = new BMap.NavigationControl();
 
@@ -53,15 +53,21 @@
     }
 
     function filter_room(room) {
-        return true;
+        var area = room['area_display'].toString();
+        area = area.replace('约', '');
+        return area > 15;
     }
 
     function draw_rooms(rooms, room_type, color) {
+        if (!rooms) {
+            return
+        }
         var points = [];
         var bounds = map.getBounds();
         var sw_point = bounds.getSouthWest();
         var es_point = bounds.getNorthEast();
         var label_count = 0;
+        var position_list = [];
         for (var i = 0; i < rooms.length; i++) {
             var item = rooms[i];
             if (!filter_room(item)) {
@@ -71,14 +77,33 @@
             var lat = item['latitude'];
             if (lng >= sw_point.lng && lng <= es_point.lng && lat >= sw_point.lat && lat <= es_point.lat) {
                 var point = new BMap.Point(lng, lat);
+                point = check_point(position_list, point);
                 point.room = item;
                 points.push(point);
                 if (label_count++ < 500) {
                     var title = item['area_display'] + '平-' + item['sell_price'] + '-' + item['name'];
                     var label = new BMap.Label(title, {position: point});
+                    label.url = item['url'];
+                    label.addEventListener("click", function (e) {
+                        var url = 'http:' + e.target.url;
+                        window.open(url);
+                    });
                     map.addOverlay(label);
                 }
             }
+        }
+
+        function check_point(point_list, point) {
+            var min = 0.0004;
+            for (var i = 0; i < point_list.length; i++) {
+                var t = point_list[i];
+                if (Math.abs(t.lng - point.lng) < min && Math.abs(t.lat - point.lat) < min) {
+                    point.lat -= min;
+                    //不跳出循环，继续比较
+                }
+            }
+            point_list.push(point);
+            return point;
         }
 
         var pointCollection = new BMap.PointCollection(points, {size: BMAP_POINT_SIZE_BIG, color: color});
@@ -112,7 +137,8 @@
 
     JSZipUtils.getBinaryContent('whole_rooms.zip', function (err, data) {
         if (err) {
-            throw err; // or handle err
+            console.log(err);
+            return;
         }
         JSZip.loadAsync(data).then(function (zip) {
             zip.file("whole_rooms.json").async("string").then(function (data) {
@@ -123,7 +149,8 @@
     });
     JSZipUtils.getBinaryContent('share_rooms.zip', function (err, data) {
         if (err) {
-            throw err; // or handle err
+            console.log(err);
+            return;
         }
         JSZip.loadAsync(data).then(function (zip) {
             zip.file("share_rooms.json").async("string").then(function (data) {
