@@ -52,14 +52,53 @@
         draw_rooms(rooms_cache["share_rooms"], "合租", '#cc3333');
     }
 
-    function filter_room(room) {
-        var area = room['area_display'].toString();
-        area = area.replace('约', '');
-        if (area < 15) {
-            return false;
+    function get_request() {
+        var search = location.search;
+        var request = {};
+        if (search.indexOf("?") != -1) {
+            search = search.substr(1);
+            var params = search.split("&");
+            for (var i = 0; i < params.length; i++) {
+                var key_value = params[i].split('=');
+                request[key_value[0]] = decodeURI(key_value[1]);
+            }
         }
-        if (room['sell_price'] > 3000) {
-            return false;
+        return request;
+
+    }
+
+    function filter_room(room) {
+        var request = get_request();
+        if (!request) {
+            return true;
+        }
+
+        //最小面积
+        var min_area = request['min_area'];
+        if (min_area) {
+            min_area = parseFloat(min_area);
+            var area = room['area_display'].toString();
+            area = area.replace('约', '');
+            if (area < min_area) {
+                return false;
+            }
+        }
+
+        //最高价格
+        var max_price = request['max_price'];
+        if (max_price) {
+            max_price = parseFloat(max_price);
+            if (room['sell_price'] > max_price) {
+                return false;
+            }
+        }
+
+        //朝向
+        var facing = request['facing'];
+        if (facing) {
+            if (room['facing'] != facing) {
+                return false;
+            }
         }
         return true;
     }
