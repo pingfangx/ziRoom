@@ -64,6 +64,7 @@ class Grid:
             return -1
         elif obj["data"]["pages"] == 1:
             # 只有一页，不需要划分
+            # 修正，一页仍需要划分，否则数据会有不全
             return -2
         return 0
 
@@ -187,7 +188,10 @@ class GridManager:
         """启动多线程"""
         self._running_thread_num = 0
         threads = []
-        for i in range(0, self._thread_num):
+        thread_num = self._thread_num
+        if thread_num > self._q.qsize():
+            thread_num = self._q.qsize()
+        for i in range(0, thread_num):
             worker = threading.Thread(target=self.work_in_thread, args=(target, i + 1))
             worker.start()
             threads.append(worker)
@@ -223,10 +227,8 @@ class GridManager:
         if status == -1:
             # 为空
             self.print_progress('结果为空，移除', thread_id, area_index)
-        elif status == -2:
-            self.print_progress('结果只有一页，加进队列', thread_id, area_index)
-            self._smaller_q.put(grid)
         else:
+            # 原本想一页的数据直接加进队列，后来发现数据不全，仍需要划分
             # 需要划分
             self.print_progress('结果不为空，进行划分', thread_id, area_index)
             for item in grid.split(count=self._split_count):
@@ -254,15 +256,27 @@ if __name__ == '__main__':
 
     # 测试
     # gm = GridManager(grid_range, min_area=1e9)
-    gm = GridManager(grid_range, thread_num=16)
+    gm = GridManager(grid_range, thread_num=64)
+    """
+    一开始认为受核心、GIL 以及服务器限制，增加线程数可能影响不大。
+    后来发现可能是 IO 密集型关系，增加线程数有用（https://www.zhihu.com/question/23474039），而且服务器也未作限制。
+    python 多线程这一块原理不是很了解
+    
+    最后爬取 2000 个区块，13000 房源
+    30 线程耗时 74s
+    60 线程耗时 58s
+    100 线程耗时有过 41s，不过有时候就会超时了。
+    """
     all_rooms = gm.run()
-    rooms = list(filter(lambda x: x["room_status"] != "ycz" and x["room_status"] != "yxd", all_rooms.values()))
-    share_rooms = list(filter(lambda x: x["is_whole"] == 0, rooms))
-    whole_rooms = list(filter(lambda x: x["is_whole"] == 1, rooms))
+    available_rooms = list(
+        filter(lambda x: x["room_status"] != "ycz" and x["room_status"] != "yxd", all_rooms.values()))
+    share_rooms = list(filter(lambda x: x["is_whole"] == 0, available_rooms))
+    whole_rooms = list(filter(lambda x: x["is_whole"] == 1, available_rooms))
 
-    print("整租房源: %d     合租房源:%d" % (len(whole_rooms), len(share_rooms)))
+    print("房源 %d,可租 %d,整租 %d,合租 %d" % (len(all_rooms), len(available_rooms), len(whole_rooms), len(share_rooms)))
 
-    with zipfile.ZipFile('web/all_rooms.zip', 'w', zipfile.ZIP_DEFLATED) as f:
+    date_str = time.strftime("%Y-%m-%d-%H%M%S", time.localtime())
+    with zipfile.ZipFile('web/all_rooms-%s.zip' % date_str, 'w', zipfile.ZIP_DEFLATED) as f:
         f.writestr('all_rooms.json', json.dumps(all_rooms))
     with zipfile.ZipFile('web/share_rooms.zip', 'w', zipfile.ZIP_DEFLATED) as f:
         f.writestr('share_rooms.json', json.dumps(share_rooms))
