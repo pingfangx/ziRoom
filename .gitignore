@@ -1,3 +1,3 @@
 # 忽略结果文件
-web/*.zip
+*.zip
 .idea

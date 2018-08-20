@@ -1,11 +1,15 @@
 # coding=utf-8
 import json
 import math
+import os
 import queue
 import threading
 import time
+import webbrowser
 import zipfile
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 
+import numpy as np
 import requests
 
 API_URL = "http://www.ziroom.com/map/room/list?min_lng=%.6f&max_lng=%.6f&min_lat=%.6f&max_lat=%.6f&p=%d"
@@ -251,35 +255,224 @@ class GridManager:
         print(text)
 
 
+class Action:
+    def __init__(self, grid_range=None, port=2233, thread_num=64):
+        """
+
+        :param grid_range: 经纬度范围，参数格式[lon_min,lon_max,lat_min,lat_max]，默认为北京
+        :param thread_num: 线程数
+        """
+        self.grid_range = grid_range
+        if self.grid_range is None:
+            self.grid_range = [115.7, 117.4, 39.4, 41.6]  # 北京市范围，
+        self.port = port
+        self.thread_num = thread_num
+
+    def main(self):
+        prompt = """
+请选择操作
+0-退出
+1-爬取
+2-启动 web 服务并打开浏览器
+3-打开浏览器
+4-分析均价
+5-比较价格
+"""
+        choice = int(input(prompt))
+        if choice == 0:
+            exit()
+        elif choice == 1:
+            self.crawl()
+        elif choice == 2:
+            self.start_web_server(os.path.abspath('web'), self.port, True)
+        elif choice == 3:
+            self.open_in_browser(self.port)
+        elif choice == 4:
+            self.analyze_rooms('rooms')
+        elif choice == 5:
+            self.compare_rooms('rooms/all_rooms-2018-02-27-115445.zip', 'rooms/all_rooms-2018-08-21-103518.zip')
+
+    def crawl(self):
+        """爬取"""
+        # 用于测试
+        # gm = GridManager(grid_range, min_area=1e9)
+        gm = GridManager(self.grid_range, thread_num=self.thread_num)
+        """
+        一开始认为受核心、GIL 以及服务器限制，增加线程数可能影响不大。
+        后来发现可能是 IO 密集型关系，增加线程数有用（https://www.zhihu.com/question/23474039），而且服务器也未作限制。
+        python 多线程这一块原理不是很了解
+
+        最后爬取 2000 个区块，13000 房源
+        30 线程耗时 74s
+        60 线程耗时 58s
+        100 线程耗时有过 41s，不过有时候就会超时了。
+        """
+        all_rooms = gm.run()
+        available_rooms = list(
+            filter(lambda x: x["room_status"] != "ycz" and x["room_status"] != "yxd", all_rooms.values()))
+        share_rooms = list(filter(lambda x: x["is_whole"] == 0, available_rooms))
+        whole_rooms = list(filter(lambda x: x["is_whole"] == 1, available_rooms))
+
+        print("房源 %d,可租 %d,整租 %d,合租 %d" % (len(all_rooms), len(available_rooms), len(whole_rooms), len(share_rooms)))
+
+        date_str = time.strftime("%Y-%m-%d-%H%M%S", time.localtime())
+        with zipfile.ZipFile('rooms/all_rooms-%s.zip' % date_str, 'w', zipfile.ZIP_DEFLATED) as f:
+            f.writestr('all_rooms.json', json.dumps(all_rooms))
+        with zipfile.ZipFile('web/share_rooms.zip', 'w', zipfile.ZIP_DEFLATED) as f:
+            f.writestr('share_rooms.json', json.dumps(share_rooms))
+        with zipfile.ZipFile('web/whole_rooms.zip', 'w', zipfile.ZIP_DEFLATED) as f:
+            f.writestr('whole_rooms.json', json.dumps(whole_rooms))
+        print('保存结果完成')
+
+    def start_web_server(self, web_dir, port, open_url=False):
+        """启动 web 服务器"""
+        os.chdir(web_dir)
+        print('starting server, port', port)
+        server_address = ('', port)
+        httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
+        print('running server...')
+        if open_url:
+            self.open_in_browser(port)
+        httpd.serve_forever()
+
+    @staticmethod
+    def open_in_browser(port):
+        """打开"""
+        url = f'http://localhost:{port}'
+        webbrowser.open_new_tab(url)
+        time.sleep(0.5)
+
+    def analyze_rooms(self, dir_path):
+        """分析房源"""
+        files = os.listdir(dir_path)
+        last_avg_price = None
+        for file in files:
+            if file.endswith('.zip'):
+                path = os.path.join(dir_path, file)
+                avg_price = self.analyze_file(path)
+                if last_avg_price:
+                    print()
+                    print(f'合租平均上涨 {avg_price[0]-last_avg_price[0]:#.2f}')
+                    print(f'整租平均上涨 {avg_price[1]-last_avg_price[1]:#.2f}')
+                last_avg_price = avg_price
+
+    def analyze_file(self, file_path):
+        """分析文件"""
+        print(f'\n分析均价 {file_path}')
+        print(f'爬取日期 {self.get_crawl_date(file_path)}')
+        rooms = self.load_rooms(file_path)
+        if rooms:
+            available_rooms = list(
+                filter(lambda x: x["room_status"] != "ycz" and x["room_status"] != "yxd", rooms.values()))
+            share_rooms = list(filter(lambda x: x["is_whole"] == 0, available_rooms))
+            whole_rooms = list(filter(lambda x: x["is_whole"] == 1, available_rooms))
+
+            print(f'共 {len(available_rooms)} 处房源')
+            count, avg_price1, avg_area = self.calculate_average_price(share_rooms)
+            print(f'合租有效房源 {count},均价 {avg_price1:#.2f},均面积 {avg_area:#.2f}')
+
+            count, avg_price2, avg_area = self.calculate_average_price(whole_rooms)
+            print(f'整租有效房源 {count},均价 {avg_price2:#.2f},均面积 {avg_area:#.2f}')
+            return avg_price1, avg_price2
+
+    @staticmethod
+    def get_crawl_date(file_path):
+        """截取爬取日期"""
+        file_name = os.path.split(file_path)[1]
+        file_name = os.path.splitext(file_name)[0]
+        # 去前后再重新拼接
+        crawl_date = '-'.join(file_name.split('-')[1:-1])
+        return crawl_date
+
+    def calculate_average_price(self, rooms):
+        """计算均价"""
+        all_price = 0
+        all_area = 0
+        count = 0
+        for room in rooms:
+            price = self.get_room_price(room)
+            if price <= 0 or room['usage_area'] <= 0:
+                # 为 0 过滤
+                # print(room)
+                continue
+            count += 1
+            all_price += price
+            all_area += room['usage_area']
+            # print(f"价格 {price} 面积 {room['usage_area']}")
+        return count, all_price / count, all_area / count
+
+    @staticmethod
+    def load_rooms(file_path) -> dict:
+        with zipfile.ZipFile(file_path) as zip_file:
+            json_file_path = 'all_rooms.json'
+            if json_file_path in zip_file.namelist():
+                obj = json.loads(zip_file.read(json_file_path).decode())
+                return obj
+        return {}
+
+    def compare_rooms(self, path1, path2):
+        """比较房源"""
+        print(f'比较价格 {self.get_crawl_date(path1)} → {self.get_crawl_date(path2)}')
+        rooms1 = self.load_rooms(path1)
+        rooms2 = self.load_rooms(path2)
+
+        # 相同房源
+        same_share_rooms = []
+        same_whole_rooms = []
+        if rooms1 and rooms2:
+            for k1, v1 in rooms1.items():
+                if k1 in rooms2.keys():
+                    v2 = rooms2[k1]
+                    price1 = self.get_room_price(v2)
+                    price2 = self.get_room_price(v1)
+                    if price1 and price2:
+                        # 有一个为 0 则过滤
+                        delta_price = price1 - price2
+                        # print(f"id 为 {k1} 的房源,价格 {self.get_room_price(v1)} → {self.get_room_price(v2)},{delta_price}")
+                        v2['delta_price'] = delta_price
+                        if v2['is_whole'] == 0:
+                            same_share_rooms.append(v2)
+                        else:
+                            same_whole_rooms.append(v2)
+        print('分析合租')
+        self.analyze_price(same_share_rooms)
+        print('\n分析整租')
+        self.analyze_price(same_whole_rooms)
+
+    def analyze_price(self, rooms):
+        """比较价格"""
+        increase_rooms = list(filter(lambda x: x['delta_price'] > 0, rooms))
+        decrease_rooms = list(filter(lambda x: x['delta_price'] < 0, rooms))
+        same_rooms = list(filter(lambda x: x['delta_price'] == 0, rooms))
+        print(f'共有 {len(rooms)} 处房源相同,其中上涨 {len(increase_rooms)} 处,下降 {len(decrease_rooms)} 处,持平 {len(same_rooms)} 处')
+
+        average_increase_price = np.average([room['delta_price'] for room in rooms])
+        print(f"在全部 {len(rooms)} 处房源中,平均涨价 {average_increase_price:#.2f},")
+
+        max_increase_price_room = increase_rooms[0]
+        for room in increase_rooms:
+            delta_price = room['delta_price']
+            if delta_price > max_increase_price_room['delta_price']:
+                max_increase_price_room = room
+        average_increase_price = np.average([room['delta_price'] for room in increase_rooms])
+        print(f"在 {len(increase_rooms)} 处上涨的房源中,平均涨价 {average_increase_price:#.2f},"
+              f"最高上涨 {max_increase_price_room['delta_price']:#.2f},"
+              f"当前价 {self.get_room_price(max_increase_price_room)},"
+              f"围观地址为 http://www.ziroom.com/z/vr/{max_increase_price_room['id']}.html")
+
+    @staticmethod
+    def get_room_price(room):
+        """获取价格"""
+        price_duanzu = room['sell_price_duanzu']
+        price_day = room['sell_price_day']
+        if price_day > 0:
+            # 按天的过滤
+            return 0
+        elif price_duanzu:
+            return price_duanzu
+        else:
+            return room['sell_price']
+
+
 if __name__ == '__main__':
-    grid_range = [115.7, 117.4, 39.4, 41.6]  # 北京市范围，扫描别的城市，只要修改经纬度范围即可 参数格式["lon_min,lon_max,lat_min,lat_max"]
-
-    # 测试
-    # gm = GridManager(grid_range, min_area=1e9)
-    gm = GridManager(grid_range, thread_num=64)
-    """
-    一开始认为受核心、GIL 以及服务器限制，增加线程数可能影响不大。
-    后来发现可能是 IO 密集型关系，增加线程数有用（https://www.zhihu.com/question/23474039），而且服务器也未作限制。
-    python 多线程这一块原理不是很了解
-    
-    最后爬取 2000 个区块，13000 房源
-    30 线程耗时 74s
-    60 线程耗时 58s
-    100 线程耗时有过 41s，不过有时候就会超时了。
-    """
-    all_rooms = gm.run()
-    available_rooms = list(
-        filter(lambda x: x["room_status"] != "ycz" and x["room_status"] != "yxd", all_rooms.values()))
-    share_rooms = list(filter(lambda x: x["is_whole"] == 0, available_rooms))
-    whole_rooms = list(filter(lambda x: x["is_whole"] == 1, available_rooms))
-
-    print("房源 %d,可租 %d,整租 %d,合租 %d" % (len(all_rooms), len(available_rooms), len(whole_rooms), len(share_rooms)))
-
-    date_str = time.strftime("%Y-%m-%d-%H%M%S", time.localtime())
-    with zipfile.ZipFile('web/all_rooms-%s.zip' % date_str, 'w', zipfile.ZIP_DEFLATED) as f:
-        f.writestr('all_rooms.json', json.dumps(all_rooms))
-    with zipfile.ZipFile('web/share_rooms.zip', 'w', zipfile.ZIP_DEFLATED) as f:
-        f.writestr('share_rooms.json', json.dumps(share_rooms))
-    with zipfile.ZipFile('web/whole_rooms.zip', 'w', zipfile.ZIP_DEFLATED) as f:
-        f.writestr('whole_rooms.json', json.dumps(whole_rooms))
-    print('保存结果完成')
+    Action(grid_range=[115.7, 117.4, 39.4, 41.6]).main()
